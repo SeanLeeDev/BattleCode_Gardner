@@ -23,6 +23,12 @@ public strictfp class RobotPlayer {
                 case GARDENER:
                     robot = new Gardener();
                     break;
+                case SOLDIER:
+                    robot = new Soldier();
+                    break;
+                case LUMBERJACK:
+                    robot = new Lumberjack();
+                    break;
             }
         } catch (Exception e) {
             System.out.println("Exception in " + rc.getType());

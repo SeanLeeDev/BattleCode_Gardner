@@ -1,6 +1,9 @@
 package botX;
 
-import battlecode.common.*;
+import battlecode.common.Clock;
+import battlecode.common.Direction;
+import battlecode.common.RobotType;
+import battlecode.common.TreeInfo;
 
 class Gardener extends Robot {
 
@@ -48,7 +51,12 @@ class Gardener extends Robot {
                         tryMove(gardnerDir);
                     }
                 }
-
+                if (robotController.canBuildRobot(RobotType.SOLDIER, dir) && Math.random() < .01) {
+                    robotController.buildRobot(RobotType.SOLDIER, dir);
+                }
+                if (robotController.canBuildRobot(RobotType.SOLDIER.LUMBERJACK, dir) && Math.random() < .01) {
+                    robotController.buildRobot(RobotType.LUMBERJACK, dir);
+                }
                 Clock.yield();
             } catch (Exception e) {
                 System.out.println("A robotController Exception");
