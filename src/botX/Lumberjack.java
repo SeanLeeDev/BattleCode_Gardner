@@ -1,66 +1,174 @@
 package botX;
 
 import battlecode.common.*;
+import scala.tools.nsc.transform.patmat.MatchApproximation;
+import sun.reflect.generics.tree.Tree;
 
+import static battlecode.common.GameConstants.LUMBERJACK_STRIKE_RADIUS;
+
+import java.awt.*;
 import java.util.Random;
 
 class Lumberjack extends Robot {
 
-    public void onUpdate() {
+    private static float chopScore = 0;
 
-        while (true) {
-            try {
+    static TreeInfo findBestTreeToChop(boolean muBeChoppable) throws GameActionException {
+        TreeInfo[] trees;
+        if(muBeChoppable)
+            trees = rc.senseNearbyTrees();
+        else {
+            trees = rc.senseNearbyTrees();
+            if(trees.length > 50)
+                trees = rc.senseNearbyTrees(5f);
+        }
+        TreeInfo bestTree = null;
+        float bestScore = 0f;
+        for(TreeInfo tree : trees) {
+            if(muBeChoppable && !rc.canChop(tree.ID))
+                continue;
+            if(tree.team != ally) {
+                float turnsToChopDown = (tree.health / GameConstants.LUMBERJACK_CHOP_DAMAGE) + (float)Math.sqrt(Math.max(3f, rc.getLocation().distanceTo(tree.location)) / type.strideRadius) + 1f;
+                float score = ((tree.containedRobot != null ? tree.containedRobot.bulletCost * 1.5f : 0) + tree.containedBullets + 1) / turnsToChopDown;
 
-                TreeInfo[] trees = robotController.senseNearbyTrees(robotController.getType().bodyRadius * 2, robotController.getTeam());
-                TreeInfo minHealthTree = null;
-                for (TreeInfo tree : trees) {
-                    if (tree.health > 0) {
-                        if (minHealthTree == null || tree.health < minHealthTree.health) {
-                            minHealthTree = tree;
-                        }
-                    }
-                }
-                if (minHealthTree != null) {
-                    robotController.chop(minHealthTree.getID());
-                }
-
-                TreeInfo[] neutralTree = robotController.senseNearbyTrees(robotController.getType().bodyRadius * 2, null);
-                TreeInfo minHealth = null;
-                for (TreeInfo tree : neutralTree) {
-                    if (tree.health > 0) {
-                        if (minHealth == null || tree.health < minHealth.health) {
-                            minHealth = tree;
-                        }
-                    }
-                }
-                if (minHealth != null) {
-                    robotController.chop(minHealth.getID());
+                if(isHighPriority(tree.ID)) {
+                    score += 50;
                 }
 
-                RobotInfo[] robots = robotController.senseNearbyRobots(RobotType.LUMBERJACK.bodyRadius + GameConstants.LUMBERJACK_STRIKE_RADIUS, enemy);
-                if (robots.length > 0 && !robotController.hasAttacked()) {
-                    robotController.strike();
+                if(tree.team == enemy) {
+                    score *= 10;
                 }
-                else {
-                    robots = robotController.senseNearbyRobots(-1, enemy);
 
-                    //if (robots.length > 0) {
-                      //  MapLocation friendlyJack = robotController.getLocation();
-                      //  MapLocation enemyBot = robots[0].getLocation();
-                      //  Direction toEnemyBot = friendlyJack.directionTo(enemyBot);
-
-                      //  tryMove(toEnemyBot);
-                    //}
-                    //else {
-                      //  tryMove(randomDirection());
-                    //}
+                if(score > bestScore) {
+                    bestScore = score;
+                    bestTree = tree;
                 }
-                Clock.yield();
-            }
-            catch (Exception e) {
-                System.out.println("A robotController Exception");
-                e.printStackTrace();
             }
         }
+        chopScore = bestScore * GameConstants.LUMBERJACK_CHOP_DAMAGE;
+
+        return bestTree;
+    }
+
+    static MapLocation pickTarget(MapLocation[] fallBackPositions) throws GameActionException {
+        int lastAttackingEnemySpotted = rc.readBroadcast(HIGH_PRIORITY_TARGET_OFFSET);
+        MapLocation highPriorityTargetPos = readBroadcastPosition(HIGH_PRIORITY_TARGET_OFFSET + 1);
+        if(rc.getRoundNum() < lastAttackingEnemySpotted + 50 && rc.getLocation().distanceTo(highPriorityTargetPos) < type.strideRadius * 20) {
+            // Stand your ground and defend
+            return highPriorityTargetPos;
+        }
+
+        if(random.nextFloat() < 0.2) {
+            if(fallBackPositions == null) {
+                fallBackPositions = readArchonLocations();
+            }
+            return pickRandomSpreadOutTarget(fallBackPositions, 2);
+        }
+        else {
+            Direction dir = randomDirection();
+            return clampToMap(rc.getLocation().add(dir, type.strideRadius * 10), type.sensorRadius * 0.8f);
+        }
+    }
+
+    //
+    @Override
+    public void onAwake() throws  GameActionException {
+        System.out.println("I'm a lumberjack and I'm okay");
+    }
+
+    static MapLocation target;
+
+    //
+    @Override
+    public void onUpdate() throws GameActionException {
+        TreeInfo bestTree = findBestTreeToChop(false);
+        BulletInfo[] bullets = rc.senseNearbyBullets(8f);
+        if(bullets.length > 5)
+            bullets = rc.senseNearbyBullets(type.strideRadius + type.bodyRadius + 3f);
+        RobotInfo[] allRobots = rc.senseNearbyRobots();
+
+        if(bestTree != null) {
+            target = bestTree.location;
+        }
+        else if (rc.getRoundNum() % 10 == 0 || target == null || rc.getLocation().distanceTo(target) < type.strideRadius) {
+            target = pickTarget(null);
+        }
+
+        MapLocation moveTo = moveToAvoidBullets(target, bullets, allRobots);
+        if(moveTo != null)
+            rc.move(moveTo);
+
+        // See if there are any enemy robots within striking range(1 for a lumberjack)
+        RobotInfo[] robots = rc.senseNearbyRobots(GameConstants.LUMBERJACK_STRIKE_RADIUS, enemy);
+        RobotInfo[] friendlyUnits = rc.senseNearbyRobots(LUMBERJACK_STRIKE_RADIUS, ally);
+
+        markEnemySpotted(allRobots);
+
+        if(robots.length > 0 && !rc.hasAttacked()) {
+            float myValue = 0f;
+            for(RobotInfo robot : friendlyUnits) {
+                if(robot.ID != rc.getID()) {
+                    float cost;
+                    if(robot.getType() == RobotType.TANK.ARCHON) {
+                        cost = 150;
+                    }
+                    else if (robot.getType() == RobotType.LUMBERJACK) {
+                        cost = 90;
+                    }
+                    else {
+                        cost = robot.getType().bulletCost;
+                    }
+                    myValue += cost / robot.getType().maxHealth;
+                }
+            }
+            float opponentValue = 0f;
+            for(RobotInfo robot: robots) {
+                float cost;
+                if(robot.getType() == RobotType.ARCHON) {
+                    cost = 150;
+                }
+                else if (robot.getType() == RobotType.LUMBERJACK) {
+                    cost = 90;
+                }
+                else {
+                    cost = robot.getType().bulletCost;
+                }
+                opponentValue += cost / robot.getType().maxHealth;
+            }
+            // Use strike() to hit all nearby robots
+            if(opponentValue > myValue)
+                rc.strike();
+        }
+
+        if(!rc.hasAttacked()) {
+            // Check if it is better to use strike or chop
+            float strikeScore = 0;
+            if(friendlyUnits.length > 0)
+                strikeScore -= 1000;
+            TreeInfo[] treesInStrikeRange = rc.senseNearbyTrees(GameConstants.LUMBERJACK_STRIKE_RADIUS);
+            for(TreeInfo tree : treesInStrikeRange) {
+                if(!rc.canStrike())
+                    System.out.println("Can't strike tree!");
+                float turnsToChopDown = (tree.health / GameConstants.LUMBERJACK_CHOP_DAMAGE) + (float)Math.sqrt(Math.max(3f, rc.getLocation().distanceTo(tree.location)) / type.strideRadius) + 1f;
+                float score = ((tree.containedRobot != null ? tree.containedRobot.bulletCost * 1.5f : 0) + tree.containedBullets + 1) / turnsToChopDown;
+                if((tree.containedRobot != null || tree.containedBullets > 0) && tree.getHealth() <= 10)
+                    score -= 10000;
+                if(tree.team == enemy)
+                    score *= 10;
+                else if (tree.team == ally)
+                    score *= 10;
+                strikeScore += score;
+            }
+            strikeScore *= RobotType.LUMBERJACK.attackPower;
+            bestTree = findBestTreeToChop(true);
+            if(strikeScore > chopScore || (strikeScore > 0 && (bestTree == null || !rc.canChop(bestTree.ID)))) {
+                rc.strike();
+            }
+            else if (bestTree != null && rc.canChop(bestTree.ID)) {
+                rc.chop(bestTree.ID);
+            }
+        }
+
+        yieldAndDoBackgroundTasks();
     }
 }

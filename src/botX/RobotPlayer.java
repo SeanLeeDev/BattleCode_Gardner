@@ -2,6 +2,7 @@ package botX;
 
 import battlecode.common.*;
 
+@SuppressWarnings("unused")
 public strictfp class RobotPlayer {
     static RobotController rc;
 
@@ -29,7 +30,15 @@ public strictfp class RobotPlayer {
                 case LUMBERJACK:
                     robot = new Lumberjack();
                     break;
+                case SCOUT:
+                    robot = new Scout();
+                    break;
+                case TANK:
+                    robot = new Tank();
+                    break;
             }
+            robot.onAwake();
+            robot.onStartOfTick();
         } catch (Exception e) {
             System.out.println("Exception in " + rc.getType());
             e.printStackTrace();
